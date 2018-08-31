@@ -1,0 +1,9 @@
+Changes
+MANIFEST
+Makefile.PL
+README
+lib/Game/DijkstraMap.pm
+t/00-load.t
+t/dimap.t
+t/pod-coverage.t
+t/pod.t
