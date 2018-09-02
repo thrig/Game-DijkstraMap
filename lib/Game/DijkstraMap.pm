@@ -11,11 +11,12 @@ use strict;
 use warnings;
 
 use Carp qw(croak);
+use List::Util qw(shuffle);
 use Moo;
 use namespace::clean;
 use Scalar::Util qw(looks_like_number);
 
-our $VERSION = '0.02';
+our $VERSION = '0.04';
 
 has max_cost => ( is => 'rw', default => sub { ~0 } );
 has min_cost => ( is => 'rw', default => sub { 0 } );
@@ -52,6 +53,74 @@ sub map {
     $self->normalize_costs($dimap);
     $self->dimap($dimap);
     return $self;
+}
+
+sub next {
+    my ( $self, $r, $c ) = @_;
+    my $dimap = $self->dimap;
+    croak "cannot pathfind on unset map" if !defined $dimap;
+    my $maxrow = $#$dimap;
+    my $maxcol = $#{ $dimap->[0] };
+    croak "row $r out of bounds" if $r > $maxrow or $r < 0;
+    croak "col $c out of bounds" if $c > $maxcol or $c < 0;
+    my @adj;
+    my $value = $dimap->[$r][$c];
+    return @adj if $value <= $self->min_cost;
+
+    for my $i ( -1, 1 ) {
+        my $x = $c + $i;
+        push @adj, [ [ $r, $x ], $dimap->[$r][$x] ] if $x >= 0 and $x <= $maxcol;
+        for my $j ( -1 .. 1 ) {
+            $x = $r + $i;
+            my $y = $c + $j;
+            push @adj, [ [ $x, $y ], $dimap->[$x][$y] ]
+              if $x >= 0
+              and $x <= $maxrow
+              and $y >= 0
+              and $y <= $maxcol;
+        }
+    }
+    my $badcost = $self->bad_cost;
+    return grep { $_->[1] < $value and $_->[1] != $badcost } @adj;
+}
+
+sub next_best {
+    my ( $self, $r, $c, $method ) = @_;
+    $method //= 'next';
+    my @ret = sort { $a->[1] <=> $b->[1] } shuffle $self->$method( $r, $c );
+    return $ret[0]->[0];
+}
+
+# next() but only in square directions or "orthogonal" (but diagonals
+# are orthogonal to one another) or in the "cardinal directions" (NSEW)
+# but that term also seems unsatisfactory
+sub next_sq {
+    my ( $self, $r, $c ) = @_;
+    my $dimap = $self->dimap;
+    croak "cannot pathfind on unset map" if !defined $dimap;
+    my $maxrow = $#$dimap;
+    my $maxcol = $#{ $dimap->[0] };
+    croak "row $r out of bounds" if $r > $maxrow or $r < 0;
+    croak "col $c out of bounds" if $c > $maxcol or $c < 0;
+    my @adj;
+    my $value = $dimap->[$r][$c];
+    return @adj if $value <= $self->min_cost;
+
+    if ( $c > 0 ) {
+        push @adj, [ [ $r, $c - 1 ], $dimap->[$r][ $c - 1 ] ];
+    }
+    if ( $c < $maxcol ) {
+        push @adj, [ [ $r, $c + 1 ], $dimap->[$r][ $c + 1 ] ];
+    }
+    if ( $r > 0 ) {
+        push @adj, [ [ $r - 1, $c ], $dimap->[ $r - 1 ][$c] ];
+    }
+    if ( $r < $maxrow ) {
+        push @adj, [ [ $r + 1, $c ], $dimap->[ $r + 1 ][$c] ];
+    }
+
+    my $badcost = $self->bad_cost;
+    return grep { $_->[1] < $value and $_->[1] != $badcost } @adj;
 }
 
 sub normalize_costs {
@@ -98,15 +167,14 @@ sub normalize_costs {
     return $self;
 }
 
-sub str2map {
-    my ( $self_or_class, $str, $lf ) = @_;
-    croak "no string given" if !defined $str;
-    $lf //= $/;
-    my @map;
-    for my $line ( split $lf, $str ) {
-        push @map, [ split //, $line ];
+sub path_best {
+    my ( $self, $r, $c, $method ) = @_;
+    my @path;
+    while ( my $next = $self->next_best( $r, $c, $method ) ) {
+        push @path, $next;
+        ( $r, $c ) = @$next;
     }
-    return \@map;
+    return \@path;
 }
 
 sub recalc {
@@ -124,6 +192,17 @@ sub recalc {
     $self->normalize_costs($dimap);
     $self->dimap($dimap);
     return $self;
+}
+
+sub str2map {
+    my ( $self_or_class, $str, $lf ) = @_;
+    croak "no string given" if !defined $str;
+    $lf //= $/;
+    my @map;
+    for my $line ( split $lf, $str ) {
+        push @map, [ split //, $line ];
+    }
+    return \@map;
 }
 
 sub update {
@@ -168,9 +247,23 @@ Game::DijkstraMap - a numeric grid of weights plus some related functions
   # create the dijkstra map
   $dm->map($level);
 
+  # path finding is now possible
+  $dm->next( 1, 2 );  # [[1,3], 6]
+  $dm->next( 1, 6 );  # [[1,7], 2], [[2,7], 1]
+
+  $dm->next_sq( 1, 6 );  # [[1,7], 2]
+
+  $dm->next_best( 1, 6 );             # 2,7
+  $dm->next_best( 1, 6, 'next_sq' );  # 1,7
+
+  $dm->path_best( 1, 1 );
+  $dm->path_best( 1, 1, 'next_sq' );
+
   # change the open door ' to a closed one
   $dm->update( [ 2, 7, -1 ] );
   $dm->recalc;
+
+  $dm->next( 1, 7 );  # nowhere better to move to
 
 =head1 DESCRIPTION
 
@@ -229,8 +322,8 @@ The Dijkstra Map, presently an array reference of array references of
 integer values. Do not change this reference unless you know what you
 are doing. It can also be assigned to directly, for better or worse.
 
-Must not be accessed by calls to B<recalc> or B<update> before being set
-by the B<map> method (or manually).
+Most method calls will fail if this is not set; be sure to load a level
+map first with the B<map> method (or manually).
 
 =item B<iters>
 
@@ -242,7 +335,7 @@ how many iterations it took B<normalize_costs> to stabilize the map.
 =head1 METHODS
 
 These methods will throw exceptions if something goes awry (especially
-when given known bad input).
+when given known bad input, or when B<dimap> has not been set).
 
 =over 4
 
@@ -254,17 +347,38 @@ the internal Dijkstra Map that is held in the B<dimap> attribute.
 
 Returns the object so can be chained with other calls.
 
+=item B<next> I<row> I<col>
+
+Returns the adjacent points with lower values than the given cell. Both
+square and diagonal moves are considered. The return format is a
+(possibly empty) list of array references in the form of
+C<[[row,col],value],...> in no order that should be relied on.
+
+L</THE DREADED DIAGONAL> has a longer discussion of such moves.
+
+=item B<next_best> I<row> I<col> [ I<next-method> ]
+
+Calls B<next> (or the method named by the optional I<next-method>
+argument) and returns only the coordinate of a best move as an array
+reference (or C<undef> if there is no such move). The coordinates are
+shuffled and then sorted by value to avoid bias from the order in which
+the adjacent coordinates are iterated over internally.
+
+=item B<next_sq> I<row> I<col>
+
+Like B<next> but only considers non-diagonal moves.
+
 =item B<normalize_costs> I<dimap>
 
 Mostly an internal routine called by B<map> or B<update> that reduces
 B<max_cost> cells as appropriate relative to the connected
 B<min_cost> cells. Changes the B<iters> attribute.
 
-=item B<str2map> I<string> [ I<split-with> ]
+=item B<path_best> I<row> I<col> [ I<next-method> ]
 
-Utility method that converts string maps to a form suitable to be passed
-to the B<map> method. Without the optional I<split-with> argument the
-string will be split into lines using C<$/>.
+Finds a best path to a goal via repeated calls to B<next> or optionally
+some other method such as C<next_sq>. Returns the path as an array
+reference of array references (a reference to a list of points).
 
 =item B<recalc>
 
@@ -273,6 +387,12 @@ B<normalize_costs>. See below for a discussion of B<update> and
 B<recalc>.
 
 Returns the object so can be chained with other calls.
+
+=item B<str2map> I<string> [ I<split-with> ]
+
+Utility method that converts string maps to a form suitable to be passed
+to the B<map> method. Without the optional I<split-with> argument the
+string will be split into lines using C<$/>.
 
 =item B<update> I<[row, col, value]> ..
 
@@ -362,11 +482,24 @@ path 34, 1, 0 and also 33, 1, 0 if diagonal moves are permitted) and not
 those at 32, 31, etc. along the longer route; for those to see the
 change of the door another B<recalc> would need to be done.
 
-If you know all the cells that are floor tiles these could be passed to
-B<update> after the map changes or the player moves; this may be less
-expensive than B<recalc> as that must inspect each cell in the grid.
+=head1 THE DREADED DIAGONAL
 
-=head1 BUGS
+Treatment of diagonal moves varies. Brogue and POWDER by default
+deny the player the ability to move to the lower right cell
+
+  ####
+  #..#
+  #.@#
+  ###.
+
+while Angband or Dungeon Crawl Stone Soup allow the move. POWDER does
+not allow the player to move diagonally to the upper left cell (unless
+polymorphed) while all the others mentioned would. Also the best square
+to move to could be occupied by another monster, magically conjured
+flames, etc. This is why B<next> and B<next_sq> are fairly generic;
+B<next_best> may not return an ideal move given other considerations.
+
+=head1 GRID BUGS
 
 =head2 Reporting Bugs
 
@@ -380,8 +513,7 @@ L<https://github.com/thrig/Game-DijkstraMap>
 
 =head2 Known Issues
 
-New code. Need to add path finding (routes) and next cell (steps along
-routes) methods.
+New code that is not much battle-tested.
 
 B<normalize_costs> is not very good with long and mostly unconnected
 corridors; this could be improved on by considering adjacent unseen

@@ -34,6 +34,7 @@ my %params = (
     },
     PREREQ_PM => {
         'Carp'             => 0,
+        'List::Util'       => 0,
         'Moo'              => 0,
         'namespace::clean' => 0,
         'Scalar::Util'     => 0,
