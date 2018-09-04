@@ -7,6 +7,9 @@ use Test::Most;    # plan is down at bottom
 my $deeply = \&eq_or_diff;
 
 use Game::DijkstraMap;
+
+dies_ok( sub { Game::DijkstraMap->new( map => [ [] ], str2map => 'x' ) } );
+
 my $dm = Game::DijkstraMap->new;
 
 dies_ok( sub { $dm->map("treasure") }, 'R.L.S. called' );
@@ -14,9 +17,10 @@ dies_ok( sub { $dm->next( 0, 0 ) } );
 dies_ok( sub { $dm->next_best( 0, 0 ) } );
 dies_ok( sub { $dm->next_sq( 0, 0 ) } );
 dies_ok( sub { $dm->path_best( 0, 0 ) } );
-dies_ok( sub { $dm->recalc }, 'recalc not allowed before map is set' );
-dies_ok( sub { $dm->update( [ 0, 0, 42 ] ) },
-    'update not allowed before map is set' );
+dies_ok( sub { $dm->recalc } );
+dies_ok( sub { $dm->unconnected } );
+dies_ok( sub { $dm->update( [ 0, 0, 42 ] ) } );
+dies_ok( sub { $dm->values } );
 
 is( $dm->max_cost, ~0 );
 is( $dm->min_cost, 0 );
@@ -73,17 +77,20 @@ $deeply->(
     ]
 );
 
+$deeply->( $dm->unconnected, [ [ 0, 0 ], [ 0, 6 ], [ 4, 0 ], [ 4, 6 ] ] );
+$deeply->( $dm->values( [ 0, 0 ], [ 1, 1 ], [ 2, 2 ] ), [ ~0, -1, 5 ] );
+
 # 6 can go to 5 or either of the diagonal 4s. this test may fail if
 # sort() or how next() iterates over the coordinates change; a more
 # expensive sub-sort on the row may be necessary in such a case
 $deeply->(
-    [ sort { $a->[1] <=> $b->[1] } $dm->next( 2, 1 ) ],
+    [ sort { $a->[1] <=> $b->[1] } @{ $dm->next( 2, 1 ) } ],
     [ [ [ 1, 2 ], 4 ], [ [ 3, 2 ], 4 ], [ [ 2, 2 ], 5 ], ]
 );
 # only one option
-$deeply->( [ $dm->next( 2, 4 ) ], [ [ [ 2, 5 ], 0 ] ], );
+$deeply->( $dm->next( 2, 4 ), [ [ [ 2, 5 ], 0 ] ], );
 # nowhere to go
-$deeply->( [ $dm->next( 0, 0 ) ], [], );
+$deeply->( $dm->next( 0, 0 ), [], );
 
 # Dijkstra! What is best in life?
 $deeply->( $dm->next_best( 1, 4 ), [ 2, 5 ] );
@@ -109,7 +116,7 @@ $deeply->(
 );
 
 $deeply->(
-    [ sort { $a->[1] <=> $b->[1] } $dm->next( 1, 2 ) ],
+    [ sort { $a->[1] <=> $b->[1] } @{ $dm->next( 1, 2 ) } ],
     [ [ [ 2, 1 ], 0 ], [ [ 1, 3 ], 3 ], ],
 );
 
@@ -126,8 +133,20 @@ $deeply->(
 );
 
 $deeply->(
-    [ sort { $a->[1] <=> $b->[1] } $dm->next( 1, 2 ) ],
+    [ sort { $a->[1] <=> $b->[1] } @{ $dm->next( 1, 2 ) } ],
     [ [ [ 2, 1 ], 0 ], [ [ 2, 2 ], 1 ], ],
 );
 
-plan tests => 28
+# diagonals are not dealt with by normalize_costs. also condensed
+# constructor form
+lives_ok {
+    $dm = Game::DijkstraMap->new( str2map => <<'EOM' );
+.#
+#x
+EOM
+    $dm->recalc;
+};
+
+$deeply->( $dm->unconnected, [ [ 0, 0 ] ] );
+
+plan tests => 35

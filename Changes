@@ -1,5 +1,12 @@
 See also the git repository.
 
+0.08    TODO
+        New BUILD code that calls map() xor str2map() for easier object
+        setup. next* methods return array reference instead of list to
+        make them more like other methods. New unconnected() and
+        values() methods. Learn more about normalize_costs (it does not
+        do diagonals).
+
 0.04    domingo,  2 de septiembre de 2018
         New methods for path finding: next, next_best, next_sq,
         path_best. Documentation on diagonals.
