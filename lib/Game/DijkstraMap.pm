@@ -6,12 +6,11 @@
 
 package Game::DijkstraMap;
 
-use 5.010000;
-use strict;
+use 5.24.0;
 use warnings;
 
 use Carp qw(croak);
-use List::Util qw(shuffle);
+use List::Util 1.26 qw(shuffle sum0);
 use Moo;
 use namespace::clean;
 use Scalar::Util qw(looks_like_number);
@@ -32,8 +31,9 @@ has costfn   => (
         };
     },
 );
-has dimap => ( is => 'rw', );
-has iters => ( is => 'rwp', default => sub { 0 } );
+has next_m => ( is => 'rw', default => sub { 'next' }, );
+has dimap  => ( is => 'rw', );
+has iters  => ( is => 'rwp', default => sub { 0 } );
 
 sub BUILD {
     my ( $self, $param ) = @_;
@@ -47,6 +47,35 @@ sub BUILD {
     }
 }
 
+sub dimap_with {
+    my ( $self, $param ) = @_;
+    my $dimap = $self->dimap;
+    croak "cannot make new dimap from unset map" if !defined $dimap;
+    my $new_dimap;
+    my $badcost = $self->bad_cost;
+    my $cols    = $dimap->[0]->$#*;
+    for my $r ( 0 .. $dimap->$#* ) {
+      COL: for my $c ( 0 .. $cols ) {
+            my $value = $dimap->[$r][$c];
+            if ( $value == $badcost ) {
+                $new_dimap->[$r][$c] = $badcost;
+                next COL;
+            }
+            $value *= $param->{my_weight} // 1;
+            my @here = map $_->values( [ $r, $c ] )->[0], $param->{objs}->@*;
+            for my $h ( 0 .. $#here ) {
+                if ( $here[$h] == $badcost ) {
+                    $new_dimap->[$r][$c] = $badcost;
+                    next COL;
+                }
+                $value += $here[$h] * ( $param->{weights}->[$h] // 0 );
+            }
+            $new_dimap->[$r][$c] = $value;
+        }
+    }
+    return $new_dimap;
+}
+
 sub map {
     my ( $self, $map ) = @_;
     my $dimap = [];
@@ -55,9 +84,9 @@ sub map {
       or ref $map ne 'ARRAY'
       or !defined $map->[0]
       or ref $map->[0] ne 'ARRAY';
-    my $cols = @{ $map->[0] };
-    for my $r ( 0 .. $#$map ) {
-        croak "unexpected column count at row $r" if @{ $map->[$r] } != $cols;
+    my $cols = $map->[0]->@*;
+    for my $r ( 0 .. $map->$#* ) {
+        croak "unexpected column count at row $r" if $map->[$r]->@* != $cols;
         for my $c ( 0 .. $cols - 1 ) {
             $dimap->[$r][$c] = $self->costfn->( $self, $map->[$r][$c] );
         }
@@ -68,15 +97,15 @@ sub map {
 }
 
 sub next {
-    my ( $self, $r, $c ) = @_;
+    my ( $self, $r, $c, $value ) = @_;
     my $dimap = $self->dimap;
     croak "cannot pathfind on unset map" if !defined $dimap;
-    my $maxrow = $#$dimap;
-    my $maxcol = $#{ $dimap->[0] };
+    my $maxrow = $dimap->$#*;
+    my $maxcol = $dimap->[0]->$#*;
     croak "row $r out of bounds" if $r > $maxrow or $r < 0;
     croak "col $c out of bounds" if $c > $maxcol or $c < 0;
     my @adj;
-    my $value = $dimap->[$r][$c];
+    $value //= $dimap->[$r][$c];
     return \@adj if $value <= $self->min_cost;
 
     for my $i ( -1, 1 ) {
@@ -97,9 +126,10 @@ sub next {
 }
 
 sub next_best {
-    my ( $self, $r, $c, $method ) = @_;
-    $method //= 'next';
-    my @ret = sort { $a->[1] <=> $b->[1] } shuffle @{ $self->$method( $r, $c ) };
+    my ( $self, $r, $c ) = @_;
+    my $method = $self->next_m;
+    my @ret =
+      sort { $a->[1] <=> $b->[1] } shuffle $self->$method( $r, $c )->@*;
     return $ret[0]->[0];
 }
 
@@ -107,15 +137,15 @@ sub next_best {
 # are orthogonal to one another) or in the "cardinal directions" (NSEW)
 # but that term also seems unsatisfactory
 sub next_sq {
-    my ( $self, $r, $c ) = @_;
+    my ( $self, $r, $c, $value ) = @_;
     my $dimap = $self->dimap;
     croak "cannot pathfind on unset map" if !defined $dimap;
-    my $maxrow = $#$dimap;
-    my $maxcol = $#{ $dimap->[0] };
+    my $maxrow = $dimap->$#*;
+    my $maxcol = $dimap->[0]->$#*;
     croak "row $r out of bounds" if $r > $maxrow or $r < 0;
     croak "col $c out of bounds" if $c > $maxcol or $c < 0;
     my @adj;
-    my $value = $dimap->[$r][$c];
+    $value //= $dimap->[$r][$c];
     return \@adj if $value <= $self->min_cost;
 
     if ( $c > 0 ) {
@@ -135,6 +165,45 @@ sub next_sq {
     return [ grep { $_->[1] < $value and $_->[1] != $badcost } @adj ];
 }
 
+sub next_with {
+    my ( $self, $r, $c, $param ) = @_;
+    my $dimap = $self->dimap;
+    croak "cannot pathfind on unset map" if !defined $dimap;
+
+    my $badcost = $self->bad_cost;
+
+    my $curcost = $dimap->[$r][$c];
+    return undef if $curcost <= $self->min_cost;
+    $curcost *= $param->{my_weight} // 1;
+    my @here = map $_->values( [ $r, $c ] )->[0], $param->{objs}->@*;
+    for my $h ( 0 .. $#here ) {
+        # this may cause problems if something is standing on a cell
+        # they can no longer move into but where it is still legal for
+        # them to leave that cell
+        return undef if $here[$h] == $badcost;
+        $curcost += $here[$h] * ( $param->{weights}->[$h] // 0 );
+    }
+
+    my $method = $self->next_m;
+    my $coords = $self->$method( $r, $c, $self->max_cost );
+    return undef unless $coords->@*;
+    my @costs = map $_->values( map $_->[0], $coords->@* ), $param->{objs}->@*;
+    my @ret;
+  COORD: for my $p ( 0 .. $coords->$#* ) {
+        my @weights;
+        for my $k ( 0 .. $#costs ) {
+            next COORD if $costs[$k][$p] == $badcost;
+            push @weights, $costs[$k][$p] * ( $param->{weights}->[$k] // 0 );
+        }
+        my $newcost = sum0 $coords->[$p][1] * ( $param->{my_weight} // 1 ), @weights;
+        push @ret, [ $coords->[$p][0], $newcost ] if $newcost < $curcost;
+    }
+
+    return undef unless @ret;
+    @ret = sort { $a->[1] <=> $b->[1] } shuffle @ret;
+    return $ret[0]->[0];
+}
+
 sub normalize_costs {
     my ( $self, $dimap ) = @_;
     my $badcost = $self->bad_cost;
@@ -144,8 +213,8 @@ sub normalize_costs {
     while (1) {
         my $stable = 1;
         $iters++;
-        my $maxrow = $#$dimap;
-        my $maxcol = $#{ $dimap->[0] };
+        my $maxrow = $dimap->$#*;
+        my $maxcol = $dimap->[0]->$#*;
         for my $r ( 0 .. $maxrow ) {
             for my $c ( 0 .. $maxcol ) {
                 my $value = $dimap->[$r][$c];
@@ -196,8 +265,8 @@ sub recalc {
     croak "cannot recalc unset map" if !defined $dimap;
     my $maxcost = $self->max_cost;
     my $mincost = $self->min_cost;
-    my $maxcol  = $#{ $dimap->[0] };
-    for my $r ( 0 .. $#$dimap ) {
+    my $maxcol  = $dimap->[0]->$#*;
+    for my $r ( 0 .. $dimap->$#* ) {
         for my $c ( 0 .. $maxcol ) {
             $dimap->[$r][$c] = $maxcost if $dimap->[$r][$c] > $mincost;
         }
@@ -218,14 +287,33 @@ sub str2map {
     return \@map;
 }
 
+sub to_tsv {
+    my ( $self, $ref ) = @_;
+    if ( !defined $ref ) {
+        $ref = $self->dimap;
+        croak "cannot use an unset map" if !defined $ref;
+    }
+    my $s    = '';
+    my $cols = $ref->[0]->$#*;
+    for my $r ( 0 .. $ref->$#* ) {
+        my $d = "\t";
+        for my $c ( 0 .. $cols ) {
+            $s .= $ref->[$r][$c] . $d;
+            $d = '' if $c == $cols - 1;
+        }
+        $s .= $/;
+    }
+    return $s;
+}
+
 sub unconnected {
     my ($self) = @_;
     my $dimap = $self->dimap;
     croak "nothing unconnected on unset map" if !defined $dimap;
     my @points;
     my $maxcost = $self->max_cost;
-    my $maxcol  = $#{ $dimap->[0] };
-    for my $r ( 0 .. $#$dimap ) {
+    my $maxcol  = $dimap->[0]->$#*;
+    for my $r ( 0 .. $dimap->$#* ) {
         for my $c ( 0 .. $maxcol ) {
             push @points, [ $r, $c ] if $dimap->[$r][$c] == $maxcost;
         }
@@ -237,8 +325,8 @@ sub update {
     my $self  = shift;
     my $dimap = $self->dimap;
     croak "cannot update unset map" if !defined $dimap;
-    my $maxrow = $#$dimap;
-    my $maxcol = $#{ $dimap->[0] };
+    my $maxrow = $dimap->$#*;
+    my $maxcol = $dimap->[0]->$#*;
     for my $ref (@_) {
         my ( $r, $c ) = ( $ref->[0], $ref->[1] );
         croak "row $r out of bounds" if $r > $maxrow or $r < 0;
@@ -255,13 +343,13 @@ sub values {
     my $dimap = $self->dimap;
     croak "cannot get values from unset map" if !defined $dimap;
     my @values;
-    my $maxrow = $#$dimap;
-    my $maxcol = $#{ $dimap->[0] };
+    my $maxrow = $dimap->$#*;
+    my $maxcol = $dimap->[0]->$#*;
     for my $point (@_) {
         my ( $r, $c ) = ( $point->[0], $point->[1] );
         croak "row $r out of bounds" if $r > $maxrow or $r < 0;
         croak "col $c out of bounds" if $c > $maxcol or $c < 0;
-        push @values, $dimap->[ $r ][ $c ];
+        push @values, $dimap->[$r][$c];
     }
     return \@values;
 }
@@ -303,11 +391,12 @@ Game::DijkstraMap - a numeric grid of weights plus some related functions
 
   $dm->next_sq( 1, 6 );  # [[1,7], 2]
 
-  $dm->next_best( 1, 6 );             # 2,7
-  $dm->next_best( 1, 6, 'next_sq' );  # 1,7
-
+  $dm->next_best( 1, 6 );  # 2,7
   $dm->path_best( 1, 1 );
-  $dm->path_best( 1, 1, 'next_sq' );
+
+  $dm->next_m('next_sq');
+  $dm->next_best( 1, 6 );  # 1,7
+  $dm->path_best( 1, 1 );
 
   # change the open door ' to a closed one
   $dm->update( [ 2, 7, -1 ] );
@@ -387,6 +476,12 @@ map first with the B<map> method (or manually).
 This is set after the B<map> and B<recalc> method calls and indicates
 how many iterations it took B<normalize_costs> to stabilize the map.
 
+=item B<next_m>
+
+A string used by various B<next_*> methods to use as a method to find
+adjacent squares to move to, C<next> by default (which allows for
+diagonal motions) but could instead be C<next_sq>.
+
 =back
 
 =head1 METHODS
@@ -396,6 +491,14 @@ when given known bad input, or when B<dimap> has not been set).
 
 =over 4
 
+=item B<dimap_with> I<param>
+
+Constructs and returns a new B<dimap> data structure ideally in
+combination with one or more other Dijkstra Map objects. Cells will be
+marked as B<bad_cost> if any object lists that for the cell; otherwise
+the new values will be a weighted combination of the values for each
+cell for each object. The I<param> are the same as used by B<next_with>.
+
 =item B<map> I<map>
 
 Accepts a level map (an array reference of array references, or a 2D
@@ -404,7 +507,7 @@ the internal Dijkstra Map that is held in the B<dimap> attribute.
 
 Returns the object so can be chained with other calls.
 
-=item B<next> I<row> I<col>
+=item B<next> I<row> I<col> [ I<value> ]
 
 Returns the adjacent points with lower values than the given cell. Both
 square and diagonal moves are considered, unlike in B<normalize_costs>.
@@ -414,17 +517,46 @@ that should be relied on.
 
 L</THE DREADED DIAGONAL> has a longer discussion of such moves.
 
-=item B<next_best> I<row> I<col> [ I<next-method> ]
+Use by default by various other B<next_*> methods, unless that is
+changed via the B<next_m> attribute.
 
-Calls B<next> (or the method named by the optional I<next-method>
-argument) and returns only the coordinate of a best move as an array
-reference (or C<undef> if there is no such move). The coordinates are
-shuffled and then sorted by value to avoid bias from the order in which
-the adjacent coordinates are iterated over internally.
+=item B<next_best> I<row> I<col>
 
-=item B<next_sq> I<row> I<col>
+Uses the B<next_m> method to return only the coordinate of a best move
+as an array reference (or C<undef> if there is no such move). The
+coordinates are shuffled and then sorted by value to avoid bias from the
+order in which the adjacent coordinates are iterated over internally.
 
-Like B<next> but only considers non-diagonal moves.
+=item B<next_sq> I<row> I<col> [ I<value> ]
+
+Like B<next> but only considers non-diagonal moves. May need to be set
+via the B<next_m> attribute if various other B<next_*> calls should only
+deal with non-diagonal motions.
+
+=item B<next_with> I<row> I<col> I<param>
+
+Similar to B<next_best> though considers all adjacent cells (via the
+B<next_m> method) and for each cell calculates a weighted cost from the
+list of I<objs> and I<weights> provided in I<param> and then returns the
+shuffled best cost from the result of those calculations. This allows
+the combination of multiple maps to determine the best move
+
+  $dm->next_with( 0, 0,
+    { objs      => [ $map1, $map2, ... ],
+      weights   => [ $w1,   $w2,   ... ],
+      my_weight => $w
+    } ),
+
+though this may create local minimums a path cannot escape from or other
+problems, depending on how the maps combine. If no I<weights> is
+provided for one or more of the I<objs> those I<objs> will be silently
+ignored. If no I<my_weight> is provided the weights in the C<$dm> map
+will be used as is.
+
+See also B<dimap_with>.
+
+A custom version of this method may need to be written--this
+implementation will for example not leave a local minimum point.
 
 =item B<normalize_costs> I<dimap>
 
@@ -462,6 +594,14 @@ Returns the object so can be chained with other calls.
 Utility method that converts string maps to a form suitable to be passed
 to the B<map> method. Without the optional I<split-with> argument the
 string will be split into lines using C<$/>.
+
+=item B<to_tsv> I<array-of-arrays>
+
+Utility method that converts the supplied I<array-of-arrays> to
+tab-separated values or lacking that uses the internal B<dimap>. Useful
+to study what B<dimap_with> does in conjunction with the string version
+of the level map. B<max_cost> may need to be lowered as C<~0> can be
+needlessly large for small test maps.
 
 =item B<unconnected>
 
@@ -602,7 +742,8 @@ L<https://github.com/thrig/Game-DijkstraMap>
 
 =head2 Known Issues
 
-New code that is not much battle-tested.
+New code that is not much battle-tested. Also a first implementation
+that suffers from hmm, how should this work? design.
 
 B<normalize_costs> is not very good with long and mostly unconnected
 corridors; this could be improved on by considering adjacent unseen
