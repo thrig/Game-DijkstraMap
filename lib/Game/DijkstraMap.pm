@@ -15,7 +15,7 @@ use Moo;
 use namespace::clean;
 use Scalar::Util qw(looks_like_number);
 
-our $VERSION = '0.08';
+our $VERSION = '0.16';
 
 has max_cost => ( is => 'rw', default => sub { ~0 } );
 has min_cost => ( is => 'rw', default => sub { 0 } );
@@ -405,6 +405,15 @@ Game::DijkstraMap - a numeric grid of weights plus some related functions
   $dm->next( 1, 7 );  # nowhere better to move to
 
   $dm->unconnected;   # [[3,3]]
+
+  # custom costfn example -- search in the walls
+  $dm = Game::DijkstraMap->new(
+      costfn => sub {
+          my ( $self, $c ) = @_;
+          if ( $c eq '#' ) { return $self->max_cost }
+          return $self->bad_cost;
+      }
+  );
 
 =head1 DESCRIPTION
 
